@@ -36,6 +36,56 @@ class GaussianPrior(nn.Module):
         return td.Independent(td.Normal(loc=self.mean, scale=self.std), 1)
 
 
+
+class MoGPrior(nn.Module):
+    def __init__(self, M, K=10):
+        """
+        Define a Mixture of Gaussians prior.
+
+        Parameters:
+        M: [int]
+           Dimension of the latent space.
+        K: [int]
+           Number of mixture components.
+        """
+        super(MoGPrior, self).__init__()
+
+        self.M = M
+        self.K = K
+
+        # Learnable means (K, M)
+        self.means = nn.Parameter(torch.randn(K, M))
+
+        # Learnable log stds (K, M)
+        self.log_stds = nn.Parameter(torch.zeros(K, M))
+
+        # Learnable mixture logits (K,)
+        self.logits = nn.Parameter(torch.zeros(K))
+
+    def forward(self):
+        """
+        Return the mixture prior distribution.
+        """
+
+        # Categorical over components
+        mix = td.Categorical(logits=self.logits)
+
+        # Component Gaussians (K, M)
+        comp = td.Independent(
+            td.Normal(
+                loc=self.means,
+                scale=torch.exp(self.log_stds)
+            ),
+            1
+        )
+
+        # Mixture distribution
+        prior = td.MixtureSameFamily(mix, comp)
+
+        return prior
+
+
+
 class GaussianEncoder(nn.Module):
     def __init__(self, encoder_net):
         """
@@ -88,6 +138,23 @@ class BernoulliDecoder(nn.Module):
         logits = self.decoder_net(z)
         return td.Independent(td.Bernoulli(logits=logits), 2)
 
+class GaussianDecoder(nn.Module):
+    def __init__(self, decoder_net):
+        super(GaussianDecoder, self).__init__()
+        self.decoder_net = decoder_net
+
+    def forward(self, z):
+        out = self.decoder_net(z)  # (B, 784*2)
+
+        mean, log_std = torch.chunk(out, 2, dim=-1)  # (B, 784), (B, 784)
+
+        mean = mean.view(-1, 28, 28)
+        log_std = log_std.view(-1, 28, 28)
+
+        std = torch.exp(log_std)
+
+        return td.Independent(td.Normal(loc=mean, scale=std), 2)
+
 
 class VAE(nn.Module):
     """
@@ -121,7 +188,14 @@ class VAE(nn.Module):
         """
         q = self.encoder(x)
         z = q.rsample()
-        elbo = torch.mean(self.decoder(z).log_prob(x) - td.kl_divergence(q, self.prior()), dim=0)
+
+        log_px = self.decoder(z).log_prob(x)
+        log_pz = self.prior().log_prob(z)
+        log_qz = q.log_prob(z)
+
+        elbo = torch.mean(log_px + log_pz - log_qz)
+        
+        #elbo = torch.mean(self.decoder(z).log_prob(x) - td.kl_divergence(q, self.prior()), dim=0)
         return elbo
 
     def sample(self, n_samples=1):
@@ -133,7 +207,8 @@ class VAE(nn.Module):
            Number of samples to generate.
         """
         z = self.prior().sample(torch.Size([n_samples]))
-        return self.decoder(z).sample()
+        #return self.decoder(z).sample()
+        return self.decoder(z).mean
     
     def forward(self, x):
         """
@@ -190,12 +265,15 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, default='train', choices=['train', 'sample'], help='what to do when running the script (default: %(default)s)')
-    parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
+    #parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
     parser.add_argument('--batch-size', type=int, default=32, metavar='N', help='batch size for training (default: %(default)s)')
     parser.add_argument('--epochs', type=int, default=10, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--latent-dim', type=int, default=32, metavar='N', help='dimension of latent variable (default: %(default)s)')
+    parser.add_argument("--prior", type=str, default="gaussian", choices=["gaussian", "mog"], help="Type of prior distribution")
+    parser.add_argument("--n_components", type=int, default=10, help="Number of mixture components (only used if prior=mog)")
+    parser.add_argument("--data-type", type=str, default="binarized", choices=["binarized", "continuous"], help="Use binarized or continuous MNIST")
 
     args = parser.parse_args()
     print('# Options')
@@ -203,7 +281,7 @@ if __name__ == "__main__":
         print(key, '=', value)
 
     device = args.device
-
+    """
     # Load MNIST as binarized at 'thresshold' and create data loaders
     thresshold = 0.5
     mnist_train_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=True, download=True,
@@ -212,11 +290,37 @@ if __name__ == "__main__":
     mnist_test_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=False, download=True,
                                                                 transform=transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: (thresshold < x).float().squeeze())])),
                                                     batch_size=args.batch_size, shuffle=True)
+    """
+
+    if args.prior == "gaussian":
+        model_path = "model_gaussian.pt"
+    elif args.prior == "mog":
+        model_path = "model_mog.pt"
+    # -------------------------------------------------
+    # Load MNIST (binarized or continuous)
+    # -------------------------------------------------
+
+    if args.data_type == "binarized":
+        threshold = 0.5
+        transform = transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: (x > threshold).float().squeeze())])
+    else:  # continuous
+        transform = transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: x.squeeze())])
+
+    mnist_train_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=True, download=True, transform=transform), batch_size=args.batch_size, shuffle=True)
+
+    mnist_test_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=False, download=True, transform=transform), batch_size=args.batch_size, shuffle=False)
 
     # Define prior distribution
     M = args.latent_dim
-    prior = GaussianPrior(M)
+    if args.prior == "gaussian":
+        prior = GaussianPrior(M)
 
+    elif args.prior == "mog":
+        from vae_bernoulli import MoGPrior
+        prior = MoGPrior(M, K=args.n_components)
+
+    else:
+        raise ValueError("Unknown prior type")
     # Define encoder and decoder networks
     encoder_net = nn.Sequential(
         nn.Flatten(),
@@ -232,12 +336,16 @@ if __name__ == "__main__":
         nn.ReLU(),
         nn.Linear(512, 512),
         nn.ReLU(),
-        nn.Linear(512, 784),
-        nn.Unflatten(-1, (28, 28))
+        nn.Linear(512, 784 * 2)
+        #nn.Unflatten(-1, (28, 28)) za binarized
     )
 
+
     # Define VAE model
-    decoder = BernoulliDecoder(decoder_net)
+    if args.data_type == "binarized":
+        decoder = BernoulliDecoder(decoder_net)
+    else:  # continuous
+        decoder = GaussianDecoder(decoder_net)
     encoder = GaussianEncoder(encoder_net)
     model = VAE(prior, decoder, encoder).to(device)
 
@@ -250,10 +358,10 @@ if __name__ == "__main__":
         train(model, optimizer, mnist_train_loader, args.epochs, args.device)
 
         # Save model
-        torch.save(model.state_dict(), args.model)
+        torch.save(model.state_dict(), model_path)
 
     elif args.mode == 'sample':
-        model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
+        model.load_state_dict(torch.load(model_path, map_location=torch.device(args.device)))
 
         # Generate samples
         model.eval()
