@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.distributions as td
 from tqdm import tqdm
+import math
 
 class GaussianBase(nn.Module):
     def __init__(self, D):
@@ -236,24 +237,52 @@ def train(model, optimizer, data_loader, epochs, device):
     progress_bar = tqdm(range(total_steps), desc="Training")
 
     for epoch in range(epochs):
-        data_iter = iter(data_loader)
-        for x in data_iter:
+        #data_iter = iter(data_loader)
+        model.train()
+        epoch_loss = 0
+
+        progress_bar = tqdm(data_loader, desc=f"Epoch {epoch+1}/{epochs}")
+
+        for x, _ in progress_bar:
             x = x.to(device)
             optimizer.zero_grad()
             loss = model.loss(x)
             loss.backward()
+            epoch_loss += loss.item()
             optimizer.step()
+            
+            with torch.no_grad():
+                log_prob = model.log_prob(x).mean()
+                bpd = - log_prob / (784 * math.log(2))
 
             # Update progress bar
-            progress_bar.set_postfix(loss=f"⠀{loss.item():12.4f}", epoch=f"{epoch+1}/{epochs}")
-            progress_bar.update()
+            #progress_bar.set_postfix(loss=f"⠀{loss.item():12.4f}", epoch=f"{epoch+1}/{epochs}")
+            #progress_bar.update()
+            progress_bar.set_postfix(
+                loss=f"{loss.item():.2f}",
+                bpd=f"{bpd.item():.3f}"
+            )
+        print(f"Epoch {epoch+1}: avg loss = {epoch_loss / len(data_loader):.2f}")
+def create_random_mask(D):
+    mask = torch.randint(0, 2, (D,))
+    return mask.float()
 
+def create_checkerboard_mask(H, W):
+    mask = torch.zeros(H, W)
 
+    for i in range(H):
+        for j in range(W):
+            if (i + j) % 2 == 0:
+                mask[i, j] = 1.0
+
+    return mask.flatten()
 if __name__ == "__main__":
     import torch.utils.data
     from torchvision import datasets, transforms
     from torchvision.utils import save_image
     import ToyData
+    from torchvision import datasets, transforms
+    from torch.utils.data import DataLoader
 
     # Parse arguments
     import argparse
@@ -273,29 +302,47 @@ if __name__ == "__main__":
         print(key, '=', value)
 
     # Generate the data
-    n_data = 10000000
-    toy = {'tg': ToyData.TwoGaussians, 'cb': ToyData.Chequerboard}[args.data]()
-    train_loader = torch.utils.data.DataLoader(toy().sample((n_data,)), batch_size=args.batch_size, shuffle=True)
-    test_loader = torch.utils.data.DataLoader(toy().sample((n_data,)), batch_size=args.batch_size, shuffle=True)
-
+    #n_data = 10000000
+    #toy = {'tg': ToyData.TwoGaussians, 'cb': ToyData.Chequerboard}[args.data]()
+    #train_loader = torch.utils.data.DataLoader(toy().sample((n_data,)), batch_size=args.batch_size, shuffle=True)
+    #test_loader = torch.utils.data.DataLoader(toy().sample((n_data,)), batch_size=args.batch_size, shuffle=True)
+    # MNIST transform (normalize to [0,1], dequantize, flatten)
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Lambda(lambda x: x + torch.rand_like(x) / 255.0),
+        transforms.Lambda(lambda x: x.flatten())
+    ])
+    # Train dataset
+    train_dataset = datasets.MNIST(
+        'data/',
+        train=True,
+        download=True,
+        transform=transform
+    )
+    train_loader = DataLoader(
+    train_dataset,
+    batch_size=args.batch_size,
+    shuffle=True
+    )   
     # Define prior distribution
-    D = next(iter(train_loader)).shape[1]
+    D = next(iter(train_loader))[0].shape[1]
     base = GaussianBase(D)
 
     # Define transformations
     transformations =[]
     mask = torch.Tensor([1 if (i+j) % 2 == 0 else 0 for i in range(28) for j in range(28)])
-    
-    num_transformations = 5
-    num_hidden = 8
+    mask = create_checkerboard_mask(28, 28)
+    num_transformations = 10
+    num_hidden = 512
 
     # Make a mask that is 1 for the first half of the features and 0 for the second half
-    mask = torch.zeros((D,))
-    mask[D//2:] = 1
+    #mask = torch.zeros((D,))
+    #mask[D//2:] = 1
     
     for i in range(num_transformations):
         mask = (1-mask) # Flip the mask
-        scale_net = nn.Sequential(nn.Linear(D, num_hidden), nn.ReLU(), nn.Linear(num_hidden, D))
+        #mask = create_random_mask(D)
+        scale_net = nn.Sequential(nn.Linear(D, num_hidden), nn.ReLU(), nn.Linear(num_hidden, D), nn.Tanh())
         translation_net = nn.Sequential(nn.Linear(D, num_hidden), nn.ReLU(), nn.Linear(num_hidden, D))
         transformations.append(MaskedCouplingLayer(scale_net, translation_net, mask))
 
@@ -312,7 +359,24 @@ if __name__ == "__main__":
 
         # Save model
         torch.save(model.state_dict(), args.model)
+    elif args.mode == 'sample':
+        model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
+        model.eval()
 
+        with torch.no_grad():
+            samples = model.sample((32,)).to(args.device)
+
+        samples = samples.view(-1, 1, 28, 28)
+        samples = torch.clamp(samples, 0, 1)
+
+        save_image(
+            samples,
+            "samples1.png",
+            nrow=8
+        )
+
+        print("Samples saved to samples.png")    
+    """
     elif args.mode == 'sample':
         import matplotlib.pyplot as plt
         import numpy as np
@@ -337,3 +401,4 @@ if __name__ == "__main__":
         fig.colorbar(im)
         plt.savefig(args.samples)
         plt.close()
+    """
