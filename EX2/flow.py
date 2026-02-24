@@ -67,8 +67,23 @@ class MaskedCouplingLayer(nn.Module):
         sum_log_det_J: [torch.Tensor]
             The sum of the log determinants of the Jacobian matrices of the forward transformations of dimension `(batch_size, feature_dim)`.
         """
-        x = z
-        log_det_J = torch.zeros(z.shape[0])
+        # osiguraj da je maska na istom device-u
+        mask = self.mask.to(z.device)
+
+        # maskirani dio (ostaje nepromijenjen)
+        z_masked = z * mask
+
+        # scale i translation se računaju SAMO iz maskiranog dijela
+        s = self.scale_net(z_masked)
+        t = self.translation_net(z_masked)
+
+        # affine transformacija samo na (1 - mask) dijelu
+        x = z_masked + (1 - mask) * (z * torch.exp(s) + t)
+
+        # log determinant Jacobiana
+        # samo transformisane dimenzije doprinose
+        log_det_J = ((1 - mask) * s).sum(dim=1)
+
         return x, log_det_J
     
     def inverse(self, x):
@@ -84,8 +99,21 @@ class MaskedCouplingLayer(nn.Module):
         sum_log_det_J: [torch.Tensor]
             The sum of the log determinants of the Jacobian matrices of the inverse transformations.
         """
-        z = x
-        log_det_J = torch.zeros(x.shape[0])
+        mask = self.mask.to(x.device)
+
+        # dio koji ostaje isti
+        x_masked = x * mask
+
+        # scale i translation računamo iz maskiranog dijela
+        s = self.scale_net(x_masked)
+        t = self.translation_net(x_masked)
+
+        # invert affine transform na (1 - mask) dijelu
+        z = x_masked + (1 - mask) * ((x - t) * torch.exp(-s))
+
+        # log determinant je negativan od forward-a
+        log_det_J = -((1 - mask) * s).sum(dim=1)
+
         return z, log_det_J
 
 
