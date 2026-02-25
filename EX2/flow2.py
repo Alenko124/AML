@@ -77,7 +77,7 @@ class MaskedCouplingLayer(nn.Module):
 
         # scale i translation računamo iz maskiranog dijela
         #s = self.scale_net(z_masked) * (1 - mask)
-        s = 0.1 * self.scale_net(z_masked) * (1 - mask)
+        s = 1 * self.scale_net(z_masked) * (1 - mask)
         t = self.translation_net(z_masked) * (1 - mask)
 
         # affine transform na (1 - mask) dijelu
@@ -94,7 +94,7 @@ class MaskedCouplingLayer(nn.Module):
 
         x_masked = x * mask
 
-        s = 0.1*self.scale_net(x_masked) * (1 - mask)
+        s = 1*self.scale_net(x_masked) * (1 - mask)
         
         t = self.translation_net(x_masked) * (1 - mask)
 
@@ -333,9 +333,9 @@ if __name__ == "__main__":
 
     # Define transformations
     transformations =[]
-    mask = torch.Tensor([1 if (i+j) % 2 == 0 else 0 for i in range(28) for j in range(28)])
+    #mask = torch.Tensor([1 if (i+j) % 2 == 0 else 0 for i in range(28) for j in range(28)])
     mask = create_checkerboard_mask(28, 28)
-    num_transformations = 3
+    num_transformations = 10
     num_hidden = 512
 
     # Make a mask that is 1 for the first half of the features and 0 for the second half
@@ -374,7 +374,7 @@ if __name__ == "__main__":
 
         save_image(
             samples,
-            "samples1.png",
+            "samples2.png",
             nrow=8
         )
 

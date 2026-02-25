@@ -10,8 +10,8 @@ import torch.distributions as td
 import torch.utils.data
 from torch.nn import functional as F
 from tqdm import tqdm
-
-
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
 class GaussianPrior(nn.Module):
     def __init__(self, M):
         """
@@ -336,8 +336,8 @@ if __name__ == "__main__":
         nn.ReLU(),
         nn.Linear(512, 512),
         nn.ReLU(),
-        nn.Linear(512, 784 * 2)
-        #nn.Unflatten(-1, (28, 28)) za binarized
+        nn.Linear(512, 784),
+        nn.Unflatten(-1, (28, 28))  # za binarized
     )
 
 
@@ -368,3 +368,120 @@ if __name__ == "__main__":
         with torch.no_grad():
             samples = (model.sample(64)).cpu() 
             save_image(samples.view(64, 1, 28, 28), args.samples)
+        total_elbo = 0.0
+        total_samples = 0
+
+        with torch.no_grad():
+            for x, _ in mnist_test_loader:
+                x = x.to(device)
+                elbo = model.elbo(x)
+                total_elbo += elbo.item() * x.size(0)
+                total_samples += x.size(0)
+
+        test_elbo = total_elbo / total_samples
+        print(f"Test ELBO: {test_elbo:.4f}")
+        # -------------------------------------------------
+        # Aggregate posterior sampling
+        # -------------------------------------------------
+        all_z = []
+
+        model.eval()
+
+        with torch.no_grad():
+            for x, _ in mnist_test_loader:
+                x = x.to(device)
+                q = model.encoder(x)
+                z = q.rsample()
+                all_z.append(z.cpu())
+
+        Z = torch.cat(all_z, dim=0)
+
+        # -------------------------------------------------
+        # Sample from prior (general solution)
+        # -------------------------------------------------
+        num_samples = Z.shape[0]
+
+        with torch.no_grad():
+            prior_dist = model.prior()  # distribution object
+            Z_prior = prior_dist.sample(torch.Size([num_samples]))
+
+        Z_prior = Z_prior.cpu().numpy()
+
+        # -------------------------------------------------
+        # PCA (fit ONLY on posterior)
+        # -------------------------------------------------
+        if M > 2:
+            print("Applying PCA...")
+            pca = PCA(n_components=2)
+            Z = pca.fit_transform(Z)
+            Z_prior = pca.transform(Z_prior)
+
+        # -------------------------------------------------
+        # Compute shared axis limits  (FER comparison)
+        # -------------------------------------------------
+        x_min = min(Z[:, 0].min(), Z_prior[:, 0].min())
+        x_max = max(Z[:, 0].max(), Z_prior[:, 0].max())
+        y_min = min(Z[:, 1].min(), Z_prior[:, 1].min())
+        y_max = max(Z[:, 1].max(), Z_prior[:, 1].max())
+
+        # Add small padding
+        padding = 0.05
+        x_range = x_max - x_min
+        y_range = y_max - y_min
+
+        x_min -= padding * x_range
+        x_max += padding * x_range
+        y_min -= padding * y_range
+        y_max += padding * y_range
+
+        # -------------------------------------------------
+        # Plot 1: Aggregate Posterior
+        # -------------------------------------------------
+        plt.figure(figsize=(6, 6))
+        plt.scatter(
+            Z[:, 0], Z[:, 1],
+            s=5,
+            alpha=0.4,
+            c="black"
+        )
+
+        plt.xlim(x_min, x_max)
+        plt.ylim(y_min, y_max)
+        plt.gca().set_aspect('equal', 'box')
+
+        plt.title(f"Aggregate Posterior ({args.prior})")
+        plt.xlabel("Latent Dimension 1")
+        plt.ylabel("Latent Dimension 2")
+        plt.tight_layout()
+
+        filename_post = f"aggregate_posterior_{args.prior}.png"
+        plt.savefig(filename_post, dpi=300)
+        plt.close()
+
+        # -------------------------------------------------
+        # Plot 2: Prior
+        # -------------------------------------------------
+        plt.figure(figsize=(6, 6))
+        plt.scatter(
+            Z_prior[:, 0], Z_prior[:, 1],
+            s=5,
+            alpha=0.4,
+            c="black"
+        )
+
+        plt.xlim(x_min, x_max)
+        plt.ylim(y_min, y_max)
+        plt.gca().set_aspect('equal', 'box')
+
+        plt.title(f"Prior Samples ({args.prior})")
+        plt.xlabel("Latent Dimension 1")
+        plt.ylabel("Latent Dimension 2")
+        plt.tight_layout()
+
+        filename_prior = f"prior_samples_{args.prior}.png"
+        plt.savefig(filename_prior, dpi=300)
+        plt.close()
+
+        print("Figures saved:")
+        print(filename_post)
+        print(filename_prior)
