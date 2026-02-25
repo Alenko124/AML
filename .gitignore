@@ -24,3 +24,8 @@ multirun/
 .data/
 data/
 
+*.pt
+*.pth
+*.png
+*.jpg
+*.jpeg
