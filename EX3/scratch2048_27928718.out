@@ -1,0 +1,9 @@
+# Options
+batch_size = 64
+data = mnist
+device = cuda
+epochs = 50
+lr = 0.001
+mode = train
+model = unet.pt
+samples = samples.png

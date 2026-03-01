@@ -46,7 +46,32 @@ class DDPM(nn.Module):
         """
 
         ### Implement Algorithm 1 here ###
-        neg_elbo = 0
+        batch_size = x.shape[0]
+        device = x.device
+
+        # 1. Sample t uniformly from {0,...,T-1}
+        t = torch.randint(0, self.T, (batch_size,), device=device)
+
+        # 2. Sample epsilon ~ N(0, I)
+        epsilon = torch.randn_like(x)
+
+        # 3. Get alpha_bar_t
+        alpha_bar_t = self.alpha_cumprod[t]
+        alpha_bar_t = alpha_bar_t.view(batch_size, *([1] * (x.dim() - 1)))
+
+        # 4. Forward diffusion: q(x_t | x_0)
+        x_t = torch.sqrt(alpha_bar_t) * x + \
+            torch.sqrt(1 - alpha_bar_t) * epsilon
+
+        # 5. Predict noise
+        t_input = t.unsqueeze(1).float() / (self.T - 1) # Normalize time input for FC network
+        epsilon_theta = self.network(x_t, t_input)
+
+        # 6. Compute MSE per sample (negative ELBO)
+        neg_elbo = torch.mean(
+            (epsilon - epsilon_theta) ** 2,
+            dim=tuple(range(1, x.dim()))
+        )
 
         return neg_elbo
 
@@ -62,12 +87,39 @@ class DDPM(nn.Module):
             The generated samples.
         """
         # Sample x_t for t=T (i.e., Gaussian noise)
-        x_t = torch.randn(shape).to(self.alpha.device)
+        device = self.alpha.device
+
+        # x_T ~ N(0,I)
+        x_t = torch.randn(shape, device=device)
+
 
         # Sample x_t given x_{t+1} until x_0 is sampled
         for t in range(self.T-1, -1, -1):
             ### Implement the remaining of Algorithm 2 here ###
-            pass
+            t_tensor = torch.full((shape[0],), t, device=device, dtype=torch.long)
+
+            beta_t = self.beta[t]
+            alpha_t = self.alpha[t]
+            alpha_bar_t = self.alpha_cumprod[t]
+
+            # Predict noise
+            t_tensor = torch.full((shape[0],), t, device=device) #za FC network
+            t_tensor = t_tensor.unsqueeze(1).float() / (self.T - 1) # Normalize time input for FC network
+            epsilon_theta = self.network(x_t, t_tensor)
+
+            # Compute mean of p_theta(x_{t-1} | x_t)
+            mean = (1 / torch.sqrt(alpha_t)) * (
+                x_t - (beta_t / torch.sqrt(1 - alpha_bar_t)) * epsilon_theta
+            )
+
+            if t > 0:
+                z = torch.randn_like(x_t)
+                sigma_t = torch.sqrt(beta_t)
+                x_t = mean + sigma_t * z
+            else:
+                # at t=0 no noise
+                x_t = mean
+
 
         return x_t
 
@@ -137,6 +189,15 @@ class FcNetwork(nn.Module):
         self.network = nn.Sequential(nn.Linear(input_dim+1, num_hidden), nn.ReLU(), 
                                      nn.Linear(num_hidden, num_hidden), nn.ReLU(), 
                                      nn.Linear(num_hidden, input_dim))
+        self.network = nn.Sequential(
+            nn.Linear(input_dim + 1, num_hidden),
+            nn.SiLU(),
+            nn.Linear(num_hidden, num_hidden),
+            nn.SiLU(),
+            nn.Linear(num_hidden, num_hidden),
+            nn.SiLU(),
+            nn.Linear(num_hidden, input_dim),
+        )
 
     def forward(self, x, t):
         """"
@@ -148,8 +209,9 @@ class FcNetwork(nn.Module):
         t: [torch.Tensor]
             The time steps to use for the forward pass of dimension `(batch_size, 1)`
         """
-        x_t_cat = torch.cat([x, t], dim=1)
-        return self.network(x_t_cat)
+        x_input = torch.cat([x, t], dim=1)
+        h = self.network[:-1](x_input)
+        return self.network[-1](h) + x
 
 
 if __name__ == "__main__":
@@ -163,10 +225,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'test'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--data', type=str, default='tg', choices=['tg', 'cb', 'mnist'], help='dataset to use {tg: two Gaussians, cb: chequerboard} (default: %(default)s)')
-    parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
+    parser.add_argument('--model', type=str, default='FC.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
-    parser.add_argument('--batch-size', type=int, default=10000, metavar='N', help='batch size for training (default: %(default)s)')
+    parser.add_argument('--batch-size', type=int, default=64, metavar='N', help='batch size for training (default: %(default)s)')
     parser.add_argument('--epochs', type=int, default=1, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--lr', type=float, default=1e-3, metavar='V', help='learning rate for training (default: %(default)s)')
 
@@ -177,16 +239,68 @@ if __name__ == "__main__":
 
     # Generate the data
     n_data = 10000000
-    toy = {'tg': ToyData.TwoGaussians, 'cb': ToyData.Chequerboard}[args.data]()
-    transform = lambda x: (x-0.5)*2.0
-    train_loader = torch.utils.data.DataLoader(transform(toy().sample((n_data,))), batch_size=args.batch_size, shuffle=True)
-    test_loader = torch.utils.data.DataLoader(transform(toy().sample((n_data,))), batch_size=args.batch_size, shuffle=True)
+    if args.data in ['tg', 'cb']:
+        toy = {'tg': ToyData.TwoGaussians,
+            'cb': ToyData.Chequerboard}[args.data]()
+
+        transform = lambda x: (x - 0.5) * 2.0
+
+        train_loader = torch.utils.data.DataLoader(
+            transform(toy().sample((n_data,))),
+            batch_size=args.batch_size,
+            shuffle=True
+        )
+
+        test_loader = torch.utils.data.DataLoader(
+            transform(toy().sample((n_data,))),
+            batch_size=args.batch_size,
+            shuffle=True
+        )
+
+    elif args.data == "mnist":
+
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Lambda(lambda x: x + torch.rand(x.shape) / 255),
+            transforms.Lambda(lambda x: (x - 0.5) * 2.0),
+            transforms.Lambda(lambda x: x.flatten())
+        ])
+
+        train_data = datasets.MNIST(
+            'data/',
+            train=True,
+            download=True,
+            transform=transform
+        )
+
+        test_data = datasets.MNIST(
+            'data/',
+            train=False,
+            download=True,
+            transform=transform
+        )
+
+        train_loader = torch.utils.data.DataLoader(
+            train_data,
+            batch_size=args.batch_size,
+            shuffle=True
+        )
+
+        test_loader = torch.utils.data.DataLoader(
+            test_data,
+            batch_size=args.batch_size,
+            shuffle=False
+        )
 
     # Get the dimension of the dataset
-    D = next(iter(train_loader)).shape[1]
+    batch = next(iter(train_loader))
+    if isinstance(batch, (list, tuple)):
+        D = batch[0].shape[1]
+    else:
+        D = batch.shape[1]
 
     # Define the network
-    num_hidden = 64
+    num_hidden = 256
     network = FcNetwork(D, num_hidden)
 
     # Set the number of steps in the diffusion process
@@ -210,27 +324,56 @@ if __name__ == "__main__":
         import matplotlib.pyplot as plt
         import numpy as np
 
-        # Load the model
-        model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
+        # Load model
+        model.load_state_dict(
+            torch.load(args.model, map_location=torch.device(args.device))
+        )
 
-        # Generate samples
         model.eval()
         with torch.no_grad():
-            samples = (model.sample((10000,D))).cpu() 
+            samples = model.sample((100, D)).cpu()
 
-        # Transform the samples back to the original space
-        samples = samples /2 + 0.5
+        # Transform back from [-1,1] to [0,1]
+        samples = samples / 2 + 0.5
+        samples = torch.clamp(samples, 0.0, 1.0)
 
-        # Plot the density of the toy data and the model samples
-        coordinates = [[[x,y] for x in np.linspace(*toy.xlim, 1000)] for y in np.linspace(*toy.ylim, 1000)]
-        prob = torch.exp(toy().log_prob(torch.tensor(coordinates)))
+        if args.data in ['tg', 'cb']:
+            # ---- TOY DATA PLOT ----
+            coordinates = [[[x,y] for x in np.linspace(*toy.xlim, 1000)]
+                        for y in np.linspace(*toy.ylim, 1000)]
+            prob = torch.exp(toy().log_prob(torch.tensor(coordinates)))
 
-        fig, ax = plt.subplots(1, 1, figsize=(7, 5))
-        im = ax.imshow(prob, extent=[toy.xlim[0], toy.xlim[1], toy.ylim[0], toy.ylim[1]], origin='lower', cmap='YlOrRd')
-        ax.scatter(samples[:, 0], samples[:, 1], s=1, c='black', alpha=0.5)
-        ax.set_xlim(toy.xlim)
-        ax.set_ylim(toy.ylim)
-        ax.set_aspect('equal')
-        fig.colorbar(im)
-        plt.savefig(args.samples)
-        plt.close()
+            fig, ax = plt.subplots(1, 1, figsize=(7, 5))
+            im = ax.imshow(prob,
+                        extent=[toy.xlim[0], toy.xlim[1],
+                                toy.ylim[0], toy.ylim[1]],
+                        origin='lower',
+                        cmap='YlOrRd')
+
+            ax.scatter(samples[:, 0], samples[:, 1],
+                    s=3, c='black', alpha=0.5)
+
+            ax.set_xlim(toy.xlim)
+            ax.set_ylim(toy.ylim)
+            ax.set_aspect('equal')
+            fig.colorbar(im)
+
+            plt.savefig(args.samples)
+            plt.close()
+
+        elif args.data == "mnist":
+            # ---- MNIST GRID PLOT ----
+            samples = samples.view(-1, 1, 28, 28)
+
+            grid_size = 10
+            fig, axes = plt.subplots(grid_size, grid_size, figsize=(8, 8))
+
+            for i in range(grid_size):
+                for j in range(grid_size):
+                    idx = i * grid_size + j
+                    axes[i, j].imshow(samples[idx, 0], cmap='gray')
+                    axes[i, j].axis('off')
+
+            plt.tight_layout()
+            plt.savefig(args.samples)
+            plt.close()
