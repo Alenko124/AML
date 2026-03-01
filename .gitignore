@@ -29,3 +29,5 @@ data/
 *.png
 *.jpg
 *.jpeg
+*.err
+*.out
