@@ -1,0 +1,16 @@
+1.0
+FID (latent DDPM, beta=1.0): 43.5474
+FID (betaVAE, beta=1.0): 43.0108
+Sampling speed: 25412.17 samples/sec
+0.1
+Sampling speed: 24960.38 samples/sec
+FID (latent DDPM, beta=0.1): 39.0235
+FID (betaVAE, beta=0.1): 43.0025
+0.001
+Sampling speed: 25717.79 samples/sec
+FID (latent DDPM, beta=0.001): 30.8867
+FID (betaVAE, beta=0.001): 26.3817
+0.0001
+Sampling speed: 26471.60 samples/sec
+FID (latent DDPM, beta=1e-05): 31.3111
+FID (betaVAE, beta=1e-05): 22.4739

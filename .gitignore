@@ -26,7 +26,7 @@ data/
 
 *.pt
 *.pth
-*.png
+#*.png
 *.jpg
 *.jpeg
 *.err

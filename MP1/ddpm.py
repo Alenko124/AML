@@ -96,16 +96,15 @@ class DDPM(nn.Module):
         # Sample x_t given x_{t+1} until x_0 is sampled
         for t in range(self.T-1, -1, -1):
             ### Implement the remaining of Algorithm 2 here ###
-            t_tensor = torch.full((shape[0], 1), t, device=device).float() / (self.T - 1)
-
+            t_tensor = torch.full((shape[0],), t, device=device, dtype=torch.long)
 
             beta_t = self.beta[t]
             alpha_t = self.alpha[t]
             alpha_bar_t = self.alpha_cumprod[t]
 
             # Predict noise
-            #t_tensor = torch.full((shape[0],), t, device=device) #za FC network
-            #t_tensor = t_tensor.unsqueeze(1).float() / (self.T - 1) # Normalize time input for FC network
+            t_tensor = torch.full((shape[0],), t, device=device) #za FC network
+            t_tensor = t_tensor.unsqueeze(1).float() / (self.T - 1) # Normalize time input for FC network
             epsilon_theta = self.network(x_t, t_tensor)
 
             # Compute mean of p_theta(x_{t-1} | x_t)
@@ -219,81 +218,54 @@ if __name__ == "__main__":
     import torch.utils.data
     from torchvision import datasets, transforms
     from torchvision.utils import save_image
-    import ToyData
-    from unet import Unet
-    from fid import compute_fid
+
     # Parse arguments
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'test'], help='what to do when running the script (default: %(default)s)')
-    parser.add_argument('--data', type=str, default='tg', choices=['tg', 'cb', 'mnist'], help='dataset to use {tg: two Gaussians, cb: chequerboard} (default: %(default)s)')
-    parser.add_argument('--model', type=str, default='unet.pt', help='file to save model to or load model from (default: %(default)s)')
-    parser.add_argument('--samples', type=str, default='samplesunet.png', help='file to save samples in (default: %(default)s)')
-    parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
+    parser.add_argument('--data', type=str, default='tg', choices=['tg', 'cb', 'mnist', 'latent'], help='dataset to use {tg: two Gaussians, cb: chequerboard} (default: %(default)s)')
+    parser.add_argument('--model', type=str, default='FC.pt', help='file to save model to or load model from (default: %(default)s)')
+    parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
+    parser.add_argument('--device', type=str, default='cuda', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
     parser.add_argument('--batch-size', type=int, default=64, metavar='N', help='batch size for training (default: %(default)s)')
     parser.add_argument('--epochs', type=int, default=1, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--lr', type=float, default=1e-3, metavar='V', help='learning rate for training (default: %(default)s)')
+    parser.add_argument("--beta", type=float, default=1.0, help="Beta parameter for ELBO (default: %(default)s)")
 
     args = parser.parse_args()
     print('# Options')
     for key, value in sorted(vars(args).items()):
         print(key, '=', value)
 
-    # Generate the data
-    n_data = 10000000
-    if args.data in ['tg', 'cb']:
-        toy = {'tg': ToyData.TwoGaussians,
-            'cb': ToyData.Chequerboard}[args.data]()
+    import os
 
-        transform = lambda x: (x - 0.5) * 2.0
+    latent_path = f"latents/latents_beta_{args.beta:.0e}.pt"
 
-        train_loader = torch.utils.data.DataLoader(
-            transform(toy().sample((n_data,))),
-            batch_size=args.batch_size,
-            shuffle=True
-        )
+    if not os.path.exists(latent_path):
+        raise FileNotFoundError(f"Latent file not found: {latent_path}")
 
-        test_loader = torch.utils.data.DataLoader(
-            transform(toy().sample((n_data,))),
-            batch_size=args.batch_size,
-            shuffle=True
-        )
+    z_data = torch.load(latent_path)
 
-    elif args.data == "mnist":
+    print(f"Loaded {z_data.shape[0]} latent vectors")
+    print(f"Latent dimension: {z_data.shape[1]}")
 
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Lambda(lambda x: x + torch.rand(x.shape) / 255),
-            transforms.Lambda(lambda x: (x - 0.5) * 2.0),
-            transforms.Lambda(lambda x: x.flatten())
-        ])
+    class LatentDataset(torch.utils.data.Dataset):
+        def __init__(self, z):
+            self.z = z
 
-        train_data = datasets.MNIST(
-            'data/',
-            train=True,
-            download=True,
-            transform=transform
-        )
+        def __len__(self):
+            return self.z.shape[0]
 
-        test_data = datasets.MNIST(
-            'data/',
-            train=False,
-            download=True,
-            transform=transform
-        )
+        def __getitem__(self, idx):
+            return self.z[idx]
 
-        train_loader = torch.utils.data.DataLoader(
-            train_data,
-            batch_size=args.batch_size,
-            shuffle=True
-        )
+    latent_dataset = LatentDataset(z_data)
 
-        test_loader = torch.utils.data.DataLoader(
-            test_data,
-            batch_size=args.batch_size,
-            shuffle=False
-        )
-
+    train_loader = torch.utils.data.DataLoader(
+        latent_dataset,
+        batch_size=args.batch_size,
+        shuffle=True
+    )
     # Get the dimension of the dataset
     batch = next(iter(train_loader))
     if isinstance(batch, (list, tuple)):
@@ -304,9 +276,9 @@ if __name__ == "__main__":
     # Define the network
     num_hidden = 256
     network = FcNetwork(D, num_hidden)
-    network = Unet().to(args.device)
+
     # Set the number of steps in the diffusion process
-    T = 1000
+    T = 300
 
     # Define model
     model = DDPM(network, T=T).to(args.device)
@@ -320,7 +292,15 @@ if __name__ == "__main__":
         train(model, optimizer, train_loader, args.epochs, args.device)
 
         # Save model
-        torch.save(model.state_dict(), args.model)
+        import os
+
+        os.makedirs("ddpm", exist_ok=True)
+
+        save_path = f"ddpm/ddpm_beta_{args.beta:.0e}.pt"
+
+        torch.save(model.state_dict(), save_path)
+        
+        print(f"Model saved to {save_path}")
 
     elif args.mode == 'sample':
         import matplotlib.pyplot as plt
@@ -333,7 +313,7 @@ if __name__ == "__main__":
 
         model.eval()
         with torch.no_grad():
-            samples = model.sample((100, 784)).cpu()
+            samples = model.sample((100, D)).cpu()
 
         # Transform back from [-1,1] to [0,1]
         samples = samples / 2 + 0.5
@@ -364,73 +344,17 @@ if __name__ == "__main__":
             plt.close()
 
         elif args.data == "mnist":
-
-            from fid import compute_fid
-            import time
-
-            # -------------------------------------------------
-            # samples su trenutno u [-1, 1] (pretpostavka)
-            # Sačuvaj kopiju za FID
-            # -------------------------------------------------
-            x_gen_fid = samples.clone()
-
-            # -------------------------------------------------
-            # Uzmi real slike iz test loadera
-            # -------------------------------------------------
-            real_images = []
-
-            with torch.no_grad():
-                for x, _ in test_loader:
-                    real_images.append(x)
-
-            real_images = torch.cat(real_images, dim=0).to(args.device)
-
-            # Pretvori real slike u [-1,1]
-            #real_images = 2 * real_images - 1
-
-            # Ako broj generisanih ≠ broj realnih, prilagodi
-            n_real = real_images.shape[0]
-            x_gen_fid = x_gen_fid[:n_real]
-            x_gen_fid = samples.view(-1, 1, 28, 28)
-            # Ako samples dolazi kao (N, 784)
-            if samples.dim() == 2:
-                x_gen_fid = samples.view(-1, 1, 28, 28)
-            else:
-                x_gen_fid = samples
-
-            # Pretvori u [-1,1]
-            x_gen_fid = 2 * x_gen_fid - 1
-
-            # Real slike
-            real_images = torch.cat([x for x, _ in test_loader], dim=0).to(args.device)
-            #real_images = 2 * real_images - 1
-            if real_images.dim() == 2:
-                real_images = real_images.view(-1, 1, 28, 28)
-            real_images = real_images.to(args.device)
-            x_gen_fid = x_gen_fid.to(args.device)
-            print(real_images.min(), real_images.max())
-            print(x_gen_fid.min(), x_gen_fid.max())
-            fid_score = compute_fid(
-                real_images,
-                x_gen_fid,
-                device=args.device,
-                classifier_ckpt="mnist_classifier.pth"
-            )
-            print(f"FID (Image DDPM): {fid_score:.4f}")
-
-            # -------------------------------------------------
-            # Vizualizacija (pretvori u [0,1])
-            # -------------------------------------------------
-            samples = samples / 2 + 0.5
-            samples = torch.clamp(samples, 0, 1)
+            # ---- MNIST GRID PLOT ----
             samples = samples.view(-1, 1, 28, 28)
 
             grid_size = 10
             fig, axes = plt.subplots(grid_size, grid_size, figsize=(8, 8))
 
-            for ax, img in zip(axes.flatten(), samples):
-                ax.imshow(img[0].cpu(), cmap='gray')
-                ax.axis('off')
+            for i in range(grid_size):
+                for j in range(grid_size):
+                    idx = i * grid_size + j
+                    axes[i, j].imshow(samples[idx, 0], cmap='gray')
+                    axes[i, j].axis('off')
 
             plt.tight_layout()
             plt.savefig(args.samples)
