@@ -312,8 +312,8 @@ if __name__ == "__main__":
         model_path = model_path.replace(".pt", "_beta0.1.pt")
     elif args.beta == 0.001:
         model_path = model_path.replace(".pt", "_beta0.001.pt")
-    elif args.beta == 0.00001:
-        model_path = model_path.replace(".pt", "_beta0.00001.pt")    
+    elif args.beta == 0.000001:
+        model_path = model_path.replace(".pt", "_beta0.000001.pt")    
     # -------------------------------------------------
     # Load MNIST (binarized or continuous)
     # -------------------------------------------------
@@ -326,9 +326,6 @@ if __name__ == "__main__":
     M = args.latent_dim
     if args.prior == "gaussian":
         prior = GaussianPrior(M)
-    elif args.prior == "mog":
-        from vae_bernoulli import MoGPrior
-        prior = MoGPrior(M, K=args.n_components)
     else:
         raise ValueError("Unknown prior type")
     # Define encoder and decoder networks

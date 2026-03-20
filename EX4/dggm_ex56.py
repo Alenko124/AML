@@ -386,6 +386,7 @@ if __name__ == "__main__":
         plt.savefig(args.plot)
 
     elif args.mode == 'curves':
+        import matplotlib.pyplot as plt
         model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
         model.eval()
 
@@ -396,3 +397,14 @@ if __name__ == "__main__":
 
         curve_len = model.curve_length(curve, T)
         print('The random curve has length {}'.format(curve_len))
+        # ---- latent kriva ----
+        C = curve(T).detach().cpu().numpy()
+
+        plt.figure()
+        plt.plot(C[:, 0], C[:, 1])
+        plt.scatter(C[0, 0], C[0, 1], label="start")
+        plt.scatter(C[-1, 0], C[-1, 1], label="end")
+        plt.legend()
+        plt.title("Latent curve (M=2)")
+        plt.savefig("latent_curve.png")
+        plt.close()

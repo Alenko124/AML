@@ -25,4 +25,4 @@
 #BSUB -o scratch2048_%J.out
 #BSUB -e scratch2048_%J.err
 source /zhome/67/7/223834/AML/.venv/bin/activate
-python /zhome/67/7/223834/AML/MP1/ddpm.py train --device cuda --data latent --epochs 100 --beta 0.00001
+python /zhome/67/7/223834/AML/MP1/ddpm.py train --device cuda --data latent --epochs 100 --beta 0.000001

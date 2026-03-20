@@ -25,4 +25,4 @@
 #BSUB -o scratch2048_%J.out
 #BSUB -e scratch2048_%J.err
 source /zhome/67/7/223834/AML/.venv/bin/activate
-python /zhome/67/7/223834/AML/MP1/betavae.py train --device cuda --epochs 50 --beta 0.00001
+python /zhome/67/7/223834/AML/MP1/betavae.py train --device cuda --epochs 50 --beta 0.000001
