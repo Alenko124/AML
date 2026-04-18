@@ -24,5 +24,8 @@
 ### -- -o and -e mean append, -oo and -eo mean overwrite --
 #BSUB -o scratch2048_%J.out
 #BSUB -e scratch2048_%J.err
-source /zhome/67/7/223834/AML/.venv/bin/activate
-python /zhome/67/7/223834/AML/EX3/ddpm_unet.py train --device cuda --data mnist --epochs 50 --model unet.pt
+module load python3/3.11.9
+alias python=python3
+echo python version: $(python --version)
+#source /zhome/67/7/223834/AML/.venv/bin/activate
+python /zhome/67/7/223834/AML/EX3/ddpm_unet.py train --device cuda --data mnist --epochs 1 --model unet.pt

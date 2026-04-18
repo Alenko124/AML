@@ -25,4 +25,4 @@
 #BSUB -o scratch2048_%J.out
 #BSUB -e scratch2048_%J.err
 source /zhome/67/7/223834/AML/.venv/bin/activate
-python /zhome/67/7/223834/AML/MP2/ensemble_vae.py train
+python /zhome/67/7/223834/AML/MP2/ensemble_vae.py cov

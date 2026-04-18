@@ -5,7 +5,7 @@ import torch
 from tqdm import tqdm
 
 # %% Device
-device = 'cpu'
+device = 'cuda'
 
 # %% Load graph data
 # Load graph from file
