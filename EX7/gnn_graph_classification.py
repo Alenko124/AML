@@ -4,7 +4,6 @@ from torch.utils.data import random_split
 from torch_geometric.datasets import TUDataset
 from torch_geometric.loader import DataLoader
 import matplotlib.pyplot as plt
-print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'No GPU')
 
 # %% Interactive plots
 plt.ion() # Enable interactive plotting
